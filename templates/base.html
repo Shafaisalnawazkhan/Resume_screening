@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="VeraCV — explainable ATS resume intelligence.">
+  <meta name="theme-color" content="#123b25">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static',filename='veracv-icon.svg') }}">
+  <title>{% block title %}VeraCV{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="{{ url_for('static',filename='site.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static',filename='report.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static',filename='preview.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static',filename='responsive.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static',filename='icon.css') }}">
+</head>
+<body>
+  <nav class="topnav">
+    <a class="brand" href="/"><img class="brand-icon" src="{{ url_for('static',filename='veracv-icon.svg') }}" alt="VeraCV"><span>vera<span>cv</span></span></a>
+    <div class="navlinks"><a class="{{'active' if page=='features'}}" href="/features">Features</a><a class="{{'active' if page=='how'}}" href="/how-it-works">How it works</a><a class="{{'active' if page=='why'}}" href="/why-us">Why VeraCV</a><a class="{{'active' if page=='contact'}}" href="/contact">Contact</a></div>
+    <a class="navcta" href="/screen-resume">Screen resume <span>→</span></a>
+  </nav>
+  {% block content %}{% endblock %}
+  <footer><a class="brand" href="/"><img class="brand-icon" src="{{ url_for('static',filename='veracv-icon.svg') }}" alt=""><span>vera<span>cv</span></span></a><p>Clear evidence. Stronger applications.</p><p>© 2026 VeraCV</p></footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
