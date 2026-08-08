@@ -13,6 +13,10 @@ from flask import Flask, jsonify, render_template, request
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 
+
+class OCRUnavailable(Exception):
+    """Raised when an image-only document needs an OCR runtime."""
+
 STOP_WORDS = {
     "about", "after", "also", "and", "are", "been", "being", "but", "can",
     "for", "from", "have", "into", "its", "job", "more", "our", "that",
@@ -27,16 +31,19 @@ def words(text: str) -> list[str]:
 def run_ocr(image) -> str:
     try:
         import pytesseract
+    except ImportError as exc:
+        raise OCRUnavailable("Python OCR package is unavailable.") from exc
 
-        if not shutil.which("tesseract"):
-            windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-            if windows_tesseract.exists():
-                pytesseract.pytesseract.tesseract_cmd = str(windows_tesseract)
-            else:
-                return ""
+    if not shutil.which("tesseract"):
+        windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        if windows_tesseract.exists():
+            pytesseract.pytesseract.tesseract_cmd = str(windows_tesseract)
+        else:
+            raise OCRUnavailable("Local OCR runtime is unavailable.")
+    try:
         return pytesseract.image_to_string(image, config="--oem 3 --psm 6")
-    except Exception:
-        return ""
+    except pytesseract.TesseractNotFoundError as exc:
+        raise OCRUnavailable("Local OCR runtime is unavailable.") from exc
 
 
 def extract_pdf(raw: bytes) -> str:
@@ -62,6 +69,8 @@ def extract_pdf(raw: bytes) -> str:
             pypdf_layout = "\n".join(page.extract_text(extraction_mode="layout") or "" for page in reader.pages)
             if len(pypdf_layout.strip()) >= 30:
                 return pypdf_layout
+        except OCRUnavailable:
+            raise
         except Exception:
             pass
 
@@ -116,6 +125,8 @@ def extract_pdf(raw: bytes) -> str:
             full_ocr = "\n".join(ocr_pages)
             if len(full_ocr.strip()) >= 30:
                 return full_ocr
+        except OCRUnavailable:
+            raise
         except Exception:
             pass
 
@@ -223,8 +234,14 @@ def screen_resume():
     if len(description) < 40:
         return jsonify(error="Add a more detailed job description (at least 40 characters)."), 400
 
+    browser_ocr_text = request.form.get("extracted_text", "").strip()
     try:
-        resume_text = extract_text(upload)
+        resume_text = browser_ocr_text if len(browser_ocr_text) >= 30 else extract_text(upload)
+    except OCRUnavailable:
+        return jsonify(
+            error="This scanned PDF needs browser OCR.",
+            code="ocr_required",
+        ), 422
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except Exception as exc:

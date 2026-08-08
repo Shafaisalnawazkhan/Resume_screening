@@ -10,12 +10,34 @@ const esc=value=>{const d=document.createElement('div');d.textContent=value;retu
 const chips=(items,kind='good')=>items.length?items.map(x=>`<span class="report-chip ${kind}">${esc(x)}</span>`).join(''):'<span class="text-sm text-[#758077]">None detected</span>';
 const list=items=>items.map(x=>`<li><span>✓</span><p>${esc(x)}</p></li>`).join('');
 
+const ocrStatus=document.querySelector('#ocrStatus');
+async function browserOcr(file){
+  if(!window.Tesseract)throw new Error('Browser OCR could not load. Check your internet connection and try again.');
+  const recognize=async source=>{const out=await Tesseract.recognize(source,'eng',{logger:m=>{if(m.status==='recognizing text')ocrStatus.textContent=`Reading scanned resume… ${Math.round((m.progress||0)*100)}%`}});return out.data.text||''};
+  if(file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf')){
+    if(!window.pdfjsLib)throw new Error('PDF reader could not load. Refresh the page and try again.');
+    pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise,text=[];
+    for(let n=1;n<=pdf.numPages;n++){ocrStatus.textContent=`Preparing page ${n} of ${pdf.numPages}…`;const page=await pdf.getPage(n),viewport=page.getViewport({scale:2}),canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');canvas.width=viewport.width;canvas.height=viewport.height;await page.render({canvasContext:ctx,viewport}).promise;text.push(await recognize(canvas))}
+    return text.join('\n');
+  }
+  return recognize(file);
+}
+
 form.addEventListener('submit',async e=>{
   e.preventDefault();error.classList.add('hidden');result.classList.add('hidden');button.disabled=true;button.innerHTML='Building your full report… <span class="ml-2 inline-block animate-spin">◌</span>';
   try{
-    const response=await fetch('/api/screen',{method:'POST',body:new FormData(form)}),type=response.headers.get('content-type')||'';
+    let payload=new FormData(form),response=await fetch('/api/screen',{method:'POST',body:payload}),type=response.headers.get('content-type')||'';
     if(!type.includes('application/json')){console.error(await response.text());throw new Error(`Server error (${response.status}). Restart Flask and try again.`)}
-    const data=await response.json();if(!response.ok)throw new Error(data.error||'Analysis failed.');
+    let data=await response.json();
+    if(!response.ok&&data.code==='ocr_required'){
+      ocrStatus.classList.remove('hidden');ocrStatus.textContent='Starting secure browser OCR…';
+      const extracted=await browserOcr(input.files[0]);
+      if(extracted.trim().length<30)throw new Error('OCR could not find enough readable text. Try a clearer scan or the original DOCX.');
+      payload=new FormData(form);payload.append('extracted_text',extracted);ocrStatus.textContent='OCR complete. Building your report…';
+      response=await fetch('/api/screen',{method:'POST',body:payload});data=await response.json();
+    }
+    if(!response.ok)throw new Error(data.error||'Analysis failed.');
     const recs=data.recommendations.map((r,i)=>`<article class="recommendation"><div class="rec-number">${String(i+1).padStart(2,'0')}</div><div><div class="flex flex-wrap items-center gap-2"><h5>${esc(r.title)}</h5><span class="priority ${r.priority.toLowerCase()}">${r.priority} priority</span></div><p>${esc(r.detail)}</p></div></article>`).join('');
     result.innerHTML=`
       <div class="report-head"><div><span class="eyebrow dark">Complete resume review</span><h3>Your path to a stronger application.</h3><p>${esc(data.summary)}</p></div><button type="button" onclick="printReport()" class="print-btn">Print report ↗</button></div>
@@ -33,7 +55,7 @@ form.addEventListener('submit',async e=>{
       <p class="report-note">This report is guidance, not a hiring decision. Add keywords only when they accurately represent your experience.</p>`;
     result.classList.remove('hidden');result.scrollIntoView({behavior:'smooth',block:'start'});
   }catch(err){error.textContent=err.message;error.classList.remove('hidden')}
-  finally{button.disabled=false;button.innerHTML='Analyze candidate <span class="ml-2">→</span>'}
+  finally{button.disabled=false;button.innerHTML='Analyze candidate <span class="ml-2">→</span>';ocrStatus.classList.add('hidden')}
 });
 
 function printReport(){
