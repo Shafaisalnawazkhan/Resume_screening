@@ -25,76 +25,104 @@ def words(text: str) -> list[str]:
 
 
 def run_ocr(image) -> str:
-    import pytesseract
+    try:
+        import pytesseract
 
-    if not shutil.which("tesseract"):
-        windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-        if windows_tesseract.exists():
-            pytesseract.pytesseract.tesseract_cmd = str(windows_tesseract)
-    return pytesseract.image_to_string(image, config="--oem 3 --psm 6")
+        if not shutil.which("tesseract"):
+            windows_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+            if windows_tesseract.exists():
+                pytesseract.pytesseract.tesseract_cmd = str(windows_tesseract)
+            else:
+                return ""
+        return pytesseract.image_to_string(image, config="--oem 3 --psm 6")
+    except Exception:
+        return ""
 
 
 def extract_pdf(raw: bytes) -> str:
-    """Extract native PDF text, repair recoverable PDFs, then fall back to OCR."""
-    from pypdf import PdfReader, PdfWriter
+    """Extract native PDF text, repair recoverable PDFs, then fall back to OCR if available."""
+    extracted_texts = []
 
-    reader = None
-    extracted = ""
+    # Method 1: pypdf (Pure Python, fast and reliable in serverless environments like Vercel)
     try:
+        from pypdf import PdfReader
         reader = PdfReader(BytesIO(raw), strict=False)
         if reader.is_encrypted:
             try:
                 reader.decrypt("")
             except Exception as exc:
                 raise ValueError("This PDF is password-protected. Remove the password and upload it again.") from exc
-        extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
+
+        pypdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        if len(pypdf_text.strip()) >= 30:
+            return pypdf_text
+
+        # Try layout extraction mode for complex PDF formatting
+        try:
+            pypdf_layout = "\n".join(page.extract_text(extraction_mode="layout") or "" for page in reader.pages)
+            if len(pypdf_layout.strip()) >= 30:
+                return pypdf_layout
+        except Exception:
+            pass
+
+        if pypdf_text.strip():
+            extracted_texts.append(pypdf_text)
     except ValueError:
         raise
     except Exception:
         pass
-    if len(extracted.strip()) >= 30:
-        return extracted
 
-    # pdfplumber handles a different set of font maps than pypdf.
+    # Method 2: pdfplumber (Handles complex font maps & tables)
     try:
         import pdfplumber
         with pdfplumber.open(BytesIO(raw)) as pdf:
-            extracted = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        if len(extracted.strip()) >= 30:
-            return extracted
+            plumber_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            if len(plumber_text.strip()) >= 30:
+                return plumber_text
+            if plumber_text.strip():
+                extracted_texts.append(plumber_text)
     except Exception:
         pass
 
-    import fitz
+    # Method 3: PyMuPDF / fitz
     document = None
     try:
+        import fitz
         document = fitz.open(stream=raw, filetype="pdf")
+        fitz_text = "\n".join(page.get_text("text") for page in document)
+        if len(fitz_text.strip()) >= 30:
+            return fitz_text
+        if fitz_text.strip():
+            extracted_texts.append(fitz_text)
     except Exception:
-        # Rewrite the page tree to repair malformed-but-readable PDFs.
-        if reader is not None:
-            try:
-                repaired = BytesIO()
-                writer = PdfWriter()
-                for page in reader.pages:
-                    writer.add_page(page)
-                writer.write(repaired)
-                document = fitz.open(stream=repaired.getvalue(), filetype="pdf")
-            except Exception:
-                document = None
-    if document is None or document.page_count == 0:
-        raise ValueError("This file is damaged or is not actually a PDF. Open it and use Print → Save as PDF, then upload the new file.")
+        pass
 
-    extracted = "\n".join(page.get_text("text") for page in document)
-    if len(extracted.strip()) >= 30:
-        return extracted
+    # Method 4: Best partial extraction candidate
+    for text in extracted_texts:
+        if len(text.strip()) >= 30:
+            return text
 
-    from PIL import Image
-    ocr_pages = []
-    for page in document:
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), alpha=False)
-        image = Image.open(BytesIO(pixmap.tobytes("png")))
-        ocr_pages.append(run_ocr(image))
-    return "\n".join(ocr_pages)
+    # Method 5: OCR fallback if Tesseract is installed
+    if document is not None:
+        try:
+            from PIL import Image
+            ocr_pages = []
+            for page in document:
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+                image = Image.open(BytesIO(pixmap.tobytes("png")))
+                ocr = run_ocr(image)
+                if ocr.strip():
+                    ocr_pages.append(ocr)
+            full_ocr = "\n".join(ocr_pages)
+            if len(full_ocr.strip()) >= 30:
+                return full_ocr
+        except Exception:
+            pass
+
+    raise ValueError(
+        "This PDF could not be read or contains scanned images without readable text. "
+        "Please upload a text-based PDF or the original DOCX file."
+    )
 
 
 def extract_text(upload) -> str:
@@ -105,16 +133,12 @@ def extract_text(upload) -> str:
     if suffix in {".txt", ".md"}:
         return raw.decode("utf-8", errors="ignore")
     if suffix == ".pdf":
-        try:
-            return extract_pdf(raw)
-        except ImportError:
-            raise ValueError("PDF support is incomplete. Run: pip install -r requirements.txt")
+        return extract_pdf(raw)
     if suffix == ".docx":
         try:
             from docx import Document
             document = Document(BytesIO(raw))
             parts = [p.text for p in document.paragraphs]
-            # Many resume templates place nearly all content inside tables.
             for table in document.tables:
                 for row in table.rows:
                     parts.extend(cell.text for cell in row.cells)
@@ -123,15 +147,25 @@ def extract_text(upload) -> str:
                 parts.extend(p.text for p in section.footer.paragraphs)
             return "\n".join(parts)
         except ImportError:
-            raise ValueError("DOCX support requires: pip install python-docx")
+            raise ValueError("DOCX support requires python-docx. Please install it.")
         except (zipfile.BadZipFile, ValueError) as exc:
             raise ValueError("This DOCX is damaged. Open it in Word and save a fresh copy.") from exc
+        except Exception:
+            raise ValueError("Could not read this DOCX file. Save it as a new DOCX or PDF and try again.")
     if suffix == ".rtf":
         text = raw.decode("utf-8", errors="ignore")
         return re.sub(r"\\[a-z]+\d* ?|[{}]", " ", text)
     if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
-        from PIL import Image
-        return run_ocr(Image.open(BytesIO(raw)).convert("RGB"))
+        try:
+            from PIL import Image
+            ocr_text = run_ocr(Image.open(BytesIO(raw)).convert("RGB"))
+            if not ocr_text.strip():
+                raise ValueError("Image OCR is not available on this server environment. Upload a text PDF or DOCX resume.")
+            return ocr_text
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("Image OCR is not available on this server environment. Upload a text PDF or DOCX resume.")
     if suffix == ".doc":
         raise ValueError("Legacy .DOC files are not reliably readable. Open it in Word and save as DOCX or PDF.")
     raise ValueError("Upload a PDF, DOCX, RTF, TXT, Markdown, PNG, JPG, WebP, BMP, or TIFF resume.")
